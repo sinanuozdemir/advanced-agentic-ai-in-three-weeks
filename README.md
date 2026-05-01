@@ -95,8 +95,8 @@ Coming soon. Notebooks live under [`notebooks/week3/`](notebooks/week3/). The `e
 
 ## Recommended preparation
 
-- Read: [Building Agentic AI](https://learning.oreilly.com/library/view/building-agentic-ai/9780135489710/) by Sinan Ozdemir
-- Read: [Quick Start Guide to Large Language Models](https://learning.oreilly.com/library/view/quick-start-guide/9780135346570/) by Sinan Ozdemir
+- Read: *Building Agentic AI* by Sinan Ozdemir — [O'Reilly](https://learning.oreilly.com/library/view/building-agentic-ai/9780135489710/) · [Amazon](https://a.co/d/eaTeURV)
+- Read: *Quick Start Guide to Large Language Models* (2nd ed.) by Sinan Ozdemir — [O'Reilly](https://learning.oreilly.com/library/view/quick-start-guide/9780135346570/) · [Amazon](https://www.amazon.com/Quick-Start-Guide-Language-Models-dp-0135346568/dp/0135346568)
 - Watch: [Quick Start Guide to Large Language Models: ChatGPT, Llama, Embeddings, Fine-Tuning and Multimodal AI](https://learning.oreilly.com/videos/-/9780135384800/) by Sinan Ozdemir
 - Explore: [AI Unveiled Expert Playlist](https://learning.oreilly.com/playlists/0c7b9a4a-de71-4235-864e-c23c64473276/) by Sinan Ozdemir
 - [`oreilly-langgraph`](https://github.com/sinanuozdemir/oreilly-langgraph) — the introductory course this one builds on
