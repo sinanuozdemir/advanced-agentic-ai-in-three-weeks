@@ -19,3 +19,6 @@ notebooks/*/data/results_*.csv
 *.egg-info/
 build/
 dist/
+
+apps/sdr_multi_agent/data/*
+data/*
