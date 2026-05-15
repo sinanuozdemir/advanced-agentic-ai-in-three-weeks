@@ -102,10 +102,6 @@ Everything Forge writes lives under `<repo>/.forge/`:
 .forge/
   config.toml                # the single source of truth
   agents/<name>.toml         # persistent agent specs
-  heartbeats/                # scheduled, scoped recurring agents
-    <name>.toml              #   the heartbeat spec (cron, task, tools)
-    <name>.runs.jsonl        #   append-only run history
-    <name>.scratchpad.md     #   the heartbeat's only cross-tick memory
   memory/
     semantic_chroma/         # SemanticMemory store (per-repo)
     episodic_chroma/         # EpisodicMemory store (per-repo)
@@ -317,85 +313,6 @@ That's it. On the next `forge` launch the supervisor will be given a `delegate_t
 
 The Electron Agents tab is a list-and-form for the same `.forge/agents/*.toml` files. The form validates against `PersistentAgentSpec` (Pydantic) and writes atomically through `PUT /api/agents/<name>`.
 
-## Heartbeats — quickstart
-
-Heartbeats are **scheduled, scoped agents**: think of them as a cron job
-the main agent can author for you. You ask the main chat agent something
-like:
-
-> "every 5 minutes, fetch https://pearson.com/foo and text me if it changes."
-
-…and the main agent calls `heartbeat_create(name, cron, task, tools=[…])`.
-Because the call grants a long-lived auto-allow scope, it always pops a
-**consent modal** in the Electron app first: you see the proposed cron
-(with the next 3 fire times), the exact tools the heartbeat would gain,
-and a preview of the task prompt. Approve once, and the heartbeat starts
-firing on its own schedule.
-
-### What gets created on disk
-
-Three files per heartbeat, all under `.forge/heartbeats/`:
-
-```
-.forge/heartbeats/
-  watch-pearson.toml           # the spec (cron, task, allowlist)
-  watch-pearson.runs.jsonl     # append-only run history (latest at EOF)
-  watch-pearson.scratchpad.md  # the heartbeat's only cross-tick memory
-```
-
-### How heartbeats remember things — the scratchpad model
-
-Every tick is a **fresh run** — no message history carries over. Instead,
-each heartbeat owns a single markdown notebook (`<name>.scratchpad.md`).
-The scheduler does two things on every tick:
-
-1. Reads the current scratchpad and **prepends it to the user message**,
-   along with a "Today is …" timestamp. The agent sees its prior dated
-   entries without paying a tool call.
-2. Builds a fresh LangChain agent with a unique `thread_id` (no
-   checkpointer). The agent uses the consented allowlist's tools, and on
-   the way out calls `heartbeat_scratchpad_write(name, contents=…)` to
-   log a dated entry for next time.
-
-This is deliberately spartan: no `[state]` dict, no checkpoint resume —
-just a markdown file the user can `cat` and edit by hand. If the
-scratchpad is wrong, you fix the markdown. If you delete the heartbeat,
-the scratchpad goes with it.
-
-### Permission model
-
-When the heartbeat fires, the broker treats it under the synthetic
-agent name `heartbeat:<name>`:
-
-- **Outside the allowlist → deny.** Any tool not in `spec.tools` is
-  denied regardless of the global `[permissions.tools]` defaults. The
-  consented allowlist *is* the heartbeat's authorization.
-- **Inside the allowlist + would have been "ask" → allow.** The user
-  pre-consented in the modal; no further prompt mid-tick.
-- **`deny` in config still wins.** A heartbeat that lists `git_push`
-  can't push if the config says `git_push = "deny"`.
-
-To grow a heartbeat's capabilities you delete it and have the main agent
-re-create it, which re-pops the consent modal.
-
-### Honest refusal
-
-The main agent's system prompt instructs it to **refuse to schedule a
-heartbeat whose task it can't fulfill**. If you ask for "text me when X
-changes" but no SMS-capable MCP server is installed, the main agent
-should reply *"I don't have a tool that can send SMS. Add an MCP server
-that provides one and ask again — I won't schedule a heartbeat that
-can't complete its task."* rather than create a doomed-on-arrival
-heartbeat.
-
-### Manage from the Electron app
-
-The Electron **Heartbeats** tab lists every spec, shows live status,
-exposes pause / resume / run-now / delete, and renders each heartbeat's
-scratchpad and last 50 runs. The backing REST surface lives at
-`/api/heartbeats` (GET list, POST create, PUT update, DELETE remove,
-POST `…/run` for a manual tick).
-
 ## Configuration reference
 
 Single source of truth: `<repo>/.forge/config.toml`. Default contents (annotated):
@@ -461,14 +378,6 @@ git_reset                = "ask"
 git_push                 = "deny"
 code_execute_python      = "ask"      # arbitrary Python in the code server
 code_reset_namespace     = "allow"
-heartbeat_create               = "allow"   # always pops the consent modal anyway
-heartbeat_list_heartbeats      = "allow"
-heartbeat_delete               = "allow"
-heartbeat_pause                = "allow"
-heartbeat_resume               = "allow"
-heartbeat_runs                 = "allow"
-heartbeat_scratchpad_read      = "allow"
-heartbeat_scratchpad_write     = "ask"     # main asks; tick agents auto-allow via consent
 
 [checkpoint]
 db_path             = ".forge/checkpoints.sqlite"
@@ -520,10 +429,6 @@ apps/forge/
         base.py                          # PlanActPolicy + Decision + ForgeContext
         trajectory_probe.py              # default — one structured-output LLM call
         tool_risk_heuristic.py           # regex-only — zero LLM cost
-    heartbeats/
-      spec.py                            # HeartbeatSpec (cron + tool allowlist)
-      registry.py                        # TOML round-trip + scratchpad helpers
-      scheduler.py                       # async tick loop; fresh run per tick
     mcp/
       tool_loader.py                     # MCP servers -> LangChain tools w/ broker
       repo_rag_indexer.py                # build_index / load_index
@@ -546,7 +451,6 @@ apps/forge/
     git_server.py                        # FastMCP status/diff/log/branch/add/commit/reset/push
     repo_rag_server.py                   # FastMCP hybrid_retrieve
     code_server.py                       # FastMCP execute_python (W2 NB1 winner)
-    heartbeat_server.py                  # FastMCP create/list/delete/scratchpad_*
   electron/
     package.json                         # electron-vite + React + TS + Tailwind
     electron.vite.config.ts
