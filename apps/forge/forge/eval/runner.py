@@ -62,12 +62,20 @@ class TaskScore:
 
 def score_task(
     *, task: str, success_criteria: str, answer: str,
+    evidence: list[str] | None = None,
     judge_model: str | None = None,
 ) -> TaskScore:
     """Run the stock rubric judge over a Forge task.
 
     ``judge_model`` defaults to the judge in the W1 module (Claude Opus 4.7);
     passing a slug here swaps it.
+
+    ``evidence`` — optional list of "what actually happened" snippets
+    (post-task file contents, observed tool calls). When supplied, the
+    W1 rubric judge grounds its faithfulness score in this evidence
+    instead of taking the agent's answer at face value. Necessary for
+    edit/tool-call tasks where the agent could say "Done!" without
+    actually doing the work, or do the work without describing it.
     """
     judge_llm = None
     if judge_model:
@@ -77,11 +85,11 @@ def score_task(
         question=task,
         reference=success_criteria,
         answer=answer,
-        evidence=None,
+        evidence=evidence,
         judge_llm=judge_llm,
     )
     overall = float(getattr(rv, "overall", 0) or 0)
-    rationale = str(getattr(rv, "rationale", "") or "")
+    rationale = str(getattr(rv, "notes", "") or getattr(rv, "rationale", "") or "")
     return TaskScore(
         score=overall,
         passed=overall >= _PASS_THRESHOLD,
@@ -166,6 +174,74 @@ async def _auto_approver(*, tool_name, args, agent_name, reason) -> bool:
     return True
 
 
+def _collect_evidence(
+    *, task: GoldTask, work_dir: Path, trace_path: Path,
+    max_file_bytes: int = 4096, max_tool_calls: int = 40,
+) -> list[str]:
+    """Snapshot what the agent actually *did* so the judge can verify
+    success_criteria against ground truth instead of the answer string.
+
+    Returns one entry per fixture file (post-task contents) plus a
+    single "TOOL CALLS" summary. Truncates aggressively — the judge
+    just needs enough signal to grade, not a full audit log.
+    """
+    out: list[str] = []
+    # Post-task contents of every file we know about (initial fixture).
+    # Walk the work_dir for these explicit paths only — we deliberately
+    # skip new files outside the fixture to keep evidence focused and
+    # avoid noise from .forge/, .git/, RAG index, etc.
+    fixture_paths: list[str] = list(task.files.keys()) if task.files else []
+    for rel in fixture_paths:
+        p = work_dir / rel
+        if not p.exists():
+            out.append(f"FILE {rel} (after task): <deleted>")
+            continue
+        try:
+            data = p.read_bytes()[: max_file_bytes + 1]
+            text = data.decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"FILE {rel} (after task): <read error: {exc!r}>")
+            continue
+        truncated = " [...truncated]" if len(data) > max_file_bytes else ""
+        out.append(f"FILE {rel} (after task):\n{text}{truncated}")
+
+    # Tool-call sequence from trace.jsonl. We pull main-agent tool calls
+    # so the judge can verify e.g. "agent called semantic_write" without
+    # having to ask the agent to recite its trajectory.
+    if trace_path.is_file():
+        try:
+            calls: list[str] = []
+            with trace_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    try:
+                        ev = json.loads(line)
+                    except Exception:  # noqa: BLE001
+                        continue
+                    if ev.get("type") != "tool_call":
+                        continue
+                    # Skip reflector — it's disabled in eval anyway,
+                    # but belt-and-suspenders for old traces.
+                    if ev.get("agent_name") == "reflector":
+                        continue
+                    tool = ev.get("tool") or "<?>"
+                    args = ev.get("args") or {}
+                    args_preview = json.dumps(args, default=str, ensure_ascii=False)
+                    if len(args_preview) > 200:
+                        args_preview = args_preview[:200] + "..."
+                    calls.append(f"  - {tool}({args_preview})")
+                    if len(calls) >= max_tool_calls:
+                        calls.append(f"  - ... (truncated at {max_tool_calls})")
+                        break
+            if calls:
+                out.append("TOOL CALLS (in order):\n" + "\n".join(calls))
+            else:
+                out.append("TOOL CALLS: <none>")
+        except Exception as exc:  # noqa: BLE001
+            out.append(f"TOOL CALLS: <trace read error: {exc!r}>")
+
+    return out
+
+
 async def _run_one(
     task: GoldTask, base_paths: ForgePaths, base_cfg: ForgeConfig,
 ) -> EvalRow:
@@ -206,6 +282,7 @@ async def _run_one(
     topology = "main"
     planned = False
     engine = None
+    evidence: list[str] = []
     try:
         engine = await ForgeEngine.start(
             paths=paths, cfg=cfg, approver=_auto_approver,
@@ -214,6 +291,15 @@ async def _run_one(
         answer = result.answer
         topology = result.topology
         planned = result.planned
+        # Snapshot post-task fixture state + tool-call trace BEFORE
+        # the finally block rmtree's the work_dir. The judge uses
+        # this as ground-truth evidence for grading.
+        try:
+            evidence = _collect_evidence(
+                task=task, work_dir=work_dir, trace_path=paths.trace_jsonl,
+            )
+        except Exception:  # noqa: BLE001
+            evidence = []
     except Exception as exc:  # noqa: BLE001
         error = f"{type(exc).__name__}: {exc}"
     finally:
@@ -242,6 +328,7 @@ async def _run_one(
         scored: TaskScore = await asyncio.to_thread(
             score_task,
             task=task.task, success_criteria=task.success_criteria, answer=answer,
+            evidence=evidence or None,
             judge_model=base_cfg.models.judge,
         )
     except Exception as exc:  # noqa: BLE001

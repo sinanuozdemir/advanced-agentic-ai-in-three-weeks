@@ -68,8 +68,15 @@ class ForgeSoloAgent:
         )
         msgs = out["messages"]
         answer = msgs[-1].content if msgs else ""
+        # Emit the FULL final answer on agent_done — this is the
+        # authoritative record of the assistant's reply for the turn
+        # (the chat UI persists it, the per-thread judge reads it as
+        # FINAL ANSWER, and humans replay it from the trace). Tool
+        # result previews stay truncated via their own helper; this
+        # one is the agent's outbound message and must not be lossy.
         self.tracer.emit(
-            "agent_done", agent_name="main", result=_preview(answer),
+            "agent_done", agent_name="main",
+            result=answer if isinstance(answer, str) else str(answer),
         )
         return answer, msgs
 
@@ -152,11 +159,6 @@ async def build_forge_solo(
 # Friendlier public name. ``build_forge_solo`` is retained as an alias for
 # the (handful of) external callers that haven't been migrated yet.
 build_forge_main = build_forge_solo
-
-
-def _preview(s: str, n: int = 240) -> str:
-    s = s if isinstance(s, str) else str(s)
-    return s if len(s) <= n else s[: n - 3] + "..."
 
 
 __all__ = [

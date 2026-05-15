@@ -186,8 +186,22 @@ class ForgeEngine:
             # Plan-mode is a per-turn behavioral hint, not a separate
             # topology. Rebuild the agent with the addendum mounted.
             await self.rebuild_main(plan_mode=True)
+        # Snapshot the agent's bound tool inventory for this turn so the
+        # per-thread judge can distinguish capability claims from
+        # hallucinations. Without this the judge sees an empty
+        # trajectory and incorrectly flags "I have fs_read" as
+        # ungrounded; with it the judge can verify the agent isn't
+        # naming a tool that doesn't exist in this turn's tool list.
+        try:
+            tools_available = sorted(
+                {t.name for t in (self.solo.tools if self.solo else [])
+                 if getattr(t, "name", None)}
+            )
+        except Exception:  # noqa: BLE001
+            tools_available = []
         self.tracer.emit(
             "thread_start", task_id=task_id, task=task, topology="main",
+            tools_available=tools_available,
         )
         # Echo which model is actually driving this turn. Critical for
         # diagnosing "I switched the model and nothing changed" — both
